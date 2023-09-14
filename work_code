@@ -1,1 +1,53 @@
 
+import pandas as pd
+import numpy as np
+
+date_filter = lambda Dat: ((Dat["year"].to_numpy() > 1964) & (Dat["year"].to_numpy() < 2023)) | ((Dat["year"].to_numpy() == 1964) & (Dat["month"].to_numpy() > 1)) | ((Dat["year"].to_numpy() == 2023) & (Dat["month"].to_numpy() < 4)) 
+
+def date_to_yearmonth(Dat):
+    Dat["year"] = np.nan
+    Dat["month"] = np.nan
+    for i in Dat.index:
+        try:
+            date = int(Dat.loc[i, "Date"])
+        except:
+            Dat = Dat.loc[0:i -1, :]
+            break
+        year = int(date/100)
+        month = date - year * 100
+        Dat.loc[i, "year"] = year
+        Dat.loc[i, "month"] = month
+
+    return Dat
+
+
+def import_data():
+    Dat = date_to_yearmonth(pd.read_csv("Data.csv"))
+
+    filter = date_filter(Dat=Dat)
+
+    return Dat.loc[filter, :]
+
+def import_Rf():
+    Dat = date_to_yearmonth(pd.read_csv("Rfs.csv"))
+
+    filter = date_filter(Dat=Dat)
+
+    return Dat.loc[filter, :]
+
+
+
+Data = import_data().set_index("Date")
+Rfs = import_Rf().set_index("Date")
+
+Data.loc[:, 'RF'] = Rfs.loc[:, "RF"]
+
+for column in Data.columns:
+    if column == "Date" or column == "year" or column == "month":
+        continue
+    Data.loc[:, column + '_excess'] = np.nan
+    # for i in Data.index:
+    #     Data.loc[i, column + '_excess'] = Data.loc[i, column] - Data.loc[i, "RF"]
+    Data.loc[:, column + '_excess'] = Data.loc[:, column] - Data.loc[:, "RF"]
+
+print(Data)
