@@ -110,3 +110,22 @@ plt.ylabel('gross return')
 plt.xlabel('volatility (variance)')
 plt.show()
 
+
+
+def grs_z(r, Rf = 0.15):
+    rm = sum(r)/len(r) #avg or expected returns on market
+    T = len(r) #lenght of data
+    print(T)
+    n = 1 #number of variables
+    sh_rm_r = np.mean(r - rm) / np.std(r) #calculates Sharpe(rm, r) ration under the assumption that r is a array
+    sh_r = np.mean(r - Rf)/ np.std(r) #calculates Sharpe(rm) still r a array
+    z = ((T - n - 1)/n) * (sh_rm_r ^2 - sh_r ^2)/ (1 + sh_r ^2)
+    return z
+
+def grs_test(GRS):
+    critical_value = f.ppf(1 - 0.05, n, T - n) #F- distribution for 0.05 sign. lvl.
+    if GRS > critical_value:
+        return print('Reject null hypothesis, CAPM model is ok')
+    else:
+        return print('Accapt null hypothesis, CAPM is shit')
+
