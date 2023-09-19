@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import datetime
+from scipy.stats import f
 
 date_filter = lambda Dat: ((Dat["year"].to_numpy() > 1964) & (Dat["year"].to_numpy() < 2023)) | ((Dat["year"].to_numpy() == 1964) & (Dat["month"].to_numpy() > 1)) | ((Dat["year"].to_numpy() == 2023) & (Dat["month"].to_numpy() < 4)) 
 
@@ -15,7 +17,7 @@ def date_to_yearmonth(Dat):
             Dat = Dat.loc[0:i -1, :]
             break
         year = int(date/100)
-        month = date - year * 100
+        month = int(date - year * 100)
         Dat.loc[i, "year"] = year
         Dat.loc[i, "month"] = month
 
@@ -32,17 +34,33 @@ def import_Rf():
     return Dat.loc[filter, :]
 
 
-Data = import_data().set_index("Date")
-Rfs = import_Rf().set_index("Date")
 
-Data.loc[:, 'RF'] = Rfs.loc[:, "RF"]
+
+
+
+Data = import_data().set_index("Date")
+Data["Dates"] = np.nan
+for i in  Data.index:
+    Data.loc[i, "Dates"] = datetime.date(year=int(Data.loc[i, "year"]), month=int(Data.loc[i, "month"]), day=1)
 
 # Different categories, i.e. the 25 portfolios
 Categories = []
 for column in Data.columns:
-    if column == "Date" or column == "year" or column == "month" or column == "RF":
+    if column == "Date" or column == "year" or column == "month" or column == "RF" or column == "Mkt-RF" or column == "Dates":
         continue
     Categories.append(column)
+
+Rfs = import_Rf().set_index("Date")
+Data.loc[:, 'RF'] = Rfs.loc[:, "RF"]
+market_str = "Mkt-RF"
+Data.loc[:, market_str + '_excess'] = Rfs.loc[:, market_str]
+
+Data = Data.set_index("Dates")
+
+# excess return of the market + market expected excess return + market volatility
+Data.loc[:, market_str] = Data.loc[:, market_str + '_excess'] + Data.loc[:, "RF"]
+market_mu = np.mean(Data.loc[:, "Mkt-RF" + '_excess'].to_numpy())
+market_var = np.var(Data.loc[:, "Mkt-RF" + '_excess'].to_numpy(), ddof=1) # ddof = 1 makes the numerator of the estimator be N-1 instead of N
 
 # calculating excess return for each category per month
 for column in Categories:
@@ -58,66 +76,94 @@ for category in Categories:
     mu.append(np.mean(Data.loc[:, category + '_excess'].to_numpy()))
     Cov_Matrix.append(Data.loc[:, category + '_excess'].to_numpy())
 
+Cov_with_market = Cov_Matrix.copy()
+Cov_with_market.append(Data.loc[:, market_str + '_excess'].to_numpy())
+Corr_wM_Matrix = np.corrcoef(Cov_with_market)
+Cov_wM_Matrix = np.cov(np.array(Cov_with_market))
+
 mu = np.vstack(mu) # making array vertical
+Corr_Matrix = np.corrcoef(Cov_Matrix)
 Cov_Matrix = np.cov(np.array(Cov_Matrix))
 Cov_Matrix_Inv = np.linalg.inv(Cov_Matrix) # expensive calculation but who cares
 
-rf = 0.15
+rf = 1 + 0.15/100
 mu = mu + rf # 0.15 is risk free rate to obtain gross return
 
-ones_vec = np.ones((25,1)) # vertical ones vector
+ones_vec = np.ones((len(Categories),1)) # vertical ones vector
 
-A = np.dot(np.transpose(mu), np.dot(Cov_Matrix_Inv, mu))
-B = np.dot(np.transpose(mu), np.dot(Cov_Matrix_Inv, ones_vec))
-C = np.dot(np.transpose(ones_vec), np.dot(Cov_Matrix_Inv, ones_vec))
-
+A = float(np.dot(np.transpose(mu), np.dot(Cov_Matrix_Inv, mu))[0])
+B = float(np.dot(np.transpose(mu), np.dot(Cov_Matrix_Inv, ones_vec))[0])
+C = float(np.dot(np.transpose(ones_vec), np.dot(Cov_Matrix_Inv, ones_vec))[0])
 
 # GMV and mu PPortfolio (writing PPortfolio wrong so it is distinguishable from the initial 25 portfolios) -> PPortfolio = a portfolio of portfolios
-pi_GMV = 1/C * np.dot(Cov_Matrix_Inv, ones_vec) # weights vector for GMV
-mu_GMV = B/C
-var_GMV = 1/C
+pi_GMV = (1/C) * np.dot(Cov_Matrix_Inv, ones_vec) # weights vector for GMV
+mu_GMV = (B/C)
+var_GMV = (1/C)
 
 pi_mu = 1/B  * np.dot(Cov_Matrix_Inv, mu) # weights vector for GMV
 mu_mu = np.dot(np.transpose(mu), pi_mu)
 
+# weight_lambda = lambda mu_target: (B*C*mu_target - B*B)/(A*C - B*B) # function to get the weight of PPortfolios GMV and mu, from a target return
+# pi_target = lambda mu_target: weight_lambda(mu_target=mu_target) * pi_mu + (1-weight_lambda(mu_target=mu_target)) * pi_GMV  # function to get the weight of each portfolio based on the target return
+# mu_target_res = lambda mu_target: np.dot(np.transpose(mu), pi_target(mu_target=mu_target))
+# var_target_2 = lambda mu_target: np.dot(pi_target(mu_target=mu_target).transpose(), np.dot(Cov_Matrix,pi_target(mu_target=mu_target)))
+# var_target = lambda mu_target: (A-2*B*mu_target+C*mu_target*mu_target)/(A*C - B*B) # function to get the variance of PPortfolios
 
-weight_lambda = lambda mu_target: (B*C*mu_target - B*B)/(A*C - B*B) # function to get the weight of PPortfolios GMV and mu, from a target return
+# tangency portfolio
+pi_tang = np.dot(Cov_Matrix_Inv, mu - rf) / (B - C * rf)
+mu_tang = float(np.dot(np.transpose(mu), pi_tang))
 
-pi_target = lambda mu_target: weight_lambda(mu_target=mu_target) * pi_mu + (1-weight_lambda(mu_target=mu_target)) * pi_GMV  # function to get the weight of each portfolio based on the target return
-
-mu_target_res = lambda mu_target: np.dot(np.transpose(mu), pi_target(mu_target=mu_target))
-
-var_target = lambda mu_target: (A-2*B*mu_target+C*mu_target*mu_target)/(A*C - B*B) # function to get the variance of PPortfolios
-
-# a vector of target returns
-targets_mu = np.arange(0.1, 3.05, 0.01) * mu_GMV
+# efficient frontier
+targets_mu = np.arange(0.05, 4.01, 0.01) * mu_GMV
 # calculating the respective variances on the efficient frontier
 targets_var = []
 for mu_target in targets_mu:
-    targets_var.append(var_target(mu_target=mu_target)[0])
-targets_var = targets_var[0]
-targets_mu = targets_mu[0]
+    weight_lambda = (B*C*mu_target - B*B)/(A*C - B*B)
+    pi_target = weight_lambda * pi_mu + (1-weight_lambda) * pi_GMV
+    mu_target_res = float(np.dot(np.transpose(mu), pi_target))
+    var_target =  float(np.dot(np.transpose(pi_target), np.dot(Cov_Matrix,pi_target)))
+    var_target_2 = (A-2*B*mu_target+C*mu_target*mu_target)/(A*C - B*B)
+    targets_var.append(var_target)
 
-# plotting
-plt.plot(var_GMV, mu_GMV, marker="o")
-plt.plot(var_target(mu_target=mu_mu), mu_mu, marker="o")
-plt.plot(targets_var, targets_mu)
+# tangency line
+# first way of calculation
+# xs = np.arange(0, 1.55, 0.05)
+# tangency_line_mu = []
+# tangency_line_StD = []
+# for x in xs:
+#     tangency_line_StD.append(x * np.sqrt((A-2*B*mu_tang+C*mu_tang*mu_tang)/(A*C - B*B)))
+#     tangency_line_mu.append(rf + x * (mu_tang - rf))
+# second way of calculation
+tangency_line_mu = []
+tangency_line_StD = []
+for mu_target in targets_mu:
+    tangency_line_mu.append(mu_target)
+    pi = (1/float(np.dot(np.transpose(mu -  rf), np.dot(Cov_Matrix_Inv, mu -  rf)))) * np.dot(Cov_Matrix_Inv, mu - rf) * (mu_target - rf)
+    tangency_line_StD.append(np.sqrt(float(np.dot(np.transpose(pi), np.dot(Cov_Matrix, pi)))))
 
-for category in Categories:
-    plt.plot(Results1.loc[category, "Var_Ri"], Results1.loc[category, "E_Ri"] + rf, marker=".", color='k')
 
-plt.ylabel('gross return')
-plt.xlabel('volatility (variance)')
-plt.show()
+X = Data.loc[:, market_str + '_excess'].to_numpy().reshape(-1,1)
+Y = Data.loc[:, Categories].to_numpy()
+ones_vec_m = np.ones((len(Data.loc[:, "Mkt-RF" + '_excess'].to_numpy()), 1))
+
+X = np.hstack((ones_vec_m, X))
+
+AA =  np.linalg.inv(np.dot(np.transpose(X) , X))
+B = np.dot( AA, np.dot(np.transpose(X), Y))
+
+print(Y)
+
 
 def grs_z(r, Rf = 0.15):
     r = np.array(r)
-    rm = sum(r)/len(r) #avg or expected returns on market
+    rm = market_mu #avg or expected returns on market
     T = len(r) #lenght of data
     print(T)
-    n = 1 #number of variables
-    sh_rm_r = np.mean(r - rm) / np.std(r) #calculates Sharpe(rm, r) ration under the assumption that r is a array
-    sh_r = np.mean(r - Rf)/ np.std(r)
+    n = 25  #number of variables
+    sh_rm_r = np.mean(r) - Rf / np.std(r) #calculates Sharpe(rm, r) ration under the assumption that r is a array
+    print(sh_rm_r)
+    sh_r = np.mean(r)/ np.std(r)
+    print(sh_r)
     z = ((T - n - 1)/n) * (sh_rm_r **2 - sh_r **2)/ (1 + sh_r **2)
     print(z)
     critical_value = f.ppf(1 - 0.05, n, T - n) #F- distribution for 0.05 sign. lvl.
@@ -126,3 +172,13 @@ def grs_z(r, Rf = 0.15):
     else:
         return 'Accapt null hypothesis, CAPM is shit'
 
+
+def grs_matrix(mat):
+    grs_test_result = []
+    mat = np.array(mat)
+    for i in range(0, 24):
+        grs_test_result.append(grs_z(mat[:, [i]], Rf = 0.15))
+    return grs_test_result
+
+
+#print(grs_matrix(Y))
