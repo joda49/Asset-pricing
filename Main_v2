@@ -65,12 +65,12 @@ for column in Data.columns:
 Rfs = import_Rf().set_index("Date")
 Data.loc[:, 'RF'] = Rfs.loc[:, "RF"]
 market_str = "Mkt-RF"
-Data.loc[:, market_st + '_excess'] = Rfs.loc[:, market_str]
+Data.loc[:, market_str + '_excess'] = Rfs.loc[:, market_str]
 
 Data = Data.set_index("Dates")
 
 # excess return of the market + market expected excess return + market volatility
-Data.loc[:, market_str] = Data.loc[:, market_str] + Data.loc[:, "RF"]
+Data.loc[:, market_str] = Data.loc[:, market_str + '_excess'] + Data.loc[:, "RF"]
 market_mu = np.mean(Data.loc[:, "Mkt-RF" + '_excess'].to_numpy())
 market_var = np.var(Data.loc[:, "Mkt-RF" + '_excess'].to_numpy(), ddof=1) # ddof = 1 makes the numerator of the estimator be N-1 instead of N
 
@@ -154,22 +154,13 @@ for mu_target in targets_mu:
     tangency_line_StD.append(np.sqrt(float(np.dot(np.transpose(pi), np.dot(Cov_Matrix, pi)))))
 
 
-# plotting
-plt.plot(np.sqrt(var_GMV), mu_GMV, marker="o")
-plt.plot(np.sqrt((A-2*B*mu_mu+C*mu_mu*mu_mu)/(A*C - B*B)), mu_mu, marker="o")
-plt.plot(np.sqrt((A-2*B*mu_tang+C*mu_tang*mu_tang)/(A*C - B*B)), mu_tang, marker="o")
-plt.plot(0, rf, marker="o")
-plt.plot(np.sqrt(targets_var), targets_mu)
-plt.plot(tangency_line_StD, tangency_line_mu)
+X = Data.loc[:, market_str + '_excess'].to_numpy().reshape(-1,1)
+Y = Data.loc[:, Categories].to_numpy()
+ones_vec_m = np.ones((len(Data.loc[:, "Mkt-RF" + '_excess'].to_numpy()), 1))
 
-for category in Categories:
-    plt.plot(np.sqrt(Results1.loc[category, "Var_Ri"]), Results1.loc[category, "E_Ri"] + rf, marker=".", color='k')
+X = np.hstack((ones_vec_m, X))
 
-plt.plot(np.sqrt(market_var), market_mu, marker=11, color = 'r')
-plt.ylabel('gross return')
-plt.xlabel('volatility (variance)')
-plt.show()
-# for category in Categories:
-#     plt.plot(Data[category + "_excess"])
+AA =  np.linalg.inv(np.dot(np.transpose(X) , X))
+B = np.dot( AA, np.dot(np.transpose(X), Y))
 
-# plt.show()
+print(B)
