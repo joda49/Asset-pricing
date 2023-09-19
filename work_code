@@ -182,3 +182,32 @@ def grs_matrix(mat):
 
 
 #print(grs_matrix(Y))
+
+
+def mu_portfolio(mat):
+    mus = []
+    mat = np.array(mat)
+    for i in range(25):
+       mus.append(np.mean(i))
+    return np.array(mus)
+
+#print(mu_portfolio(Y))
+
+def grs_matrix(matr, Rf = 0.15):
+    matr = np.array(matr)
+    T = len(matr) #lenght of data
+    print(T)
+    n = 25  #number of variables
+    sigma = np.linalg.inv(np.corrcoef(matr, rowvar=False))
+    covmat = np.corrcoef(matr, rowvar=False)
+    print(covmat)
+    matrix = np.dot(np.matmul(mu_portfolio(Y), sigma), mu_portfolio(Y))
+    sh_r = (np.mean(matr) - Rf)/ np.std(matr)
+    print(sh_r)
+    z = ((T - n - 1)/n) * matrix/ (1 + sh_r **2)
+    print(z)
+    critical_value = f.ppf(1 - 0.05, n, T - n) #F- distribution for 0.05 sign. lvl.
+    if z > critical_value:
+        return 'Reject null hypothesis, CAPM model is ok'
+    else:
+        return 'Accapt null hypothesis, CAPM is shit'
