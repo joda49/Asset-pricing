@@ -1,0 +1,252 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import datetime
+import scipy.stats as stats
+import statsmodels.api as sm
+
+date_filter = lambda Dat: ((Dat["year"].to_numpy() > 1964) & (Dat["year"].to_numpy() < 2023)) | ((Dat["year"].to_numpy() == 1964) & (Dat["month"].to_numpy() > 1)) | ((Dat["year"].to_numpy() == 2023) & (Dat["month"].to_numpy() < 4)) 
+
+def date_to_yearmonth(Dat):
+    # Add columns year and month, provided a column Date with the year and month in the format 199901 for Jan 1999
+    Dat["year"] = np.nan
+    Dat["month"] = np.nan
+    for i in Dat.index:
+        try:
+            date = int(Dat.loc[i, "Date"])
+        except:
+            Dat = Dat.loc[0:i -1, :]
+            break
+        year = int(date/100)
+        month = int(date - year * 100)
+        Dat.loc[i, "year"] = year
+        Dat.loc[i, "month"] = month
+
+    return Dat
+
+def import_data():
+    Dat = date_to_yearmonth(pd.read_csv("Data.csv"))
+    filter = date_filter(Dat=Dat)
+    return Dat.loc[filter, :]
+
+def import_Rf():
+    Dat = date_to_yearmonth(pd.read_csv("Rfs.csv"))
+    filter = date_filter(Dat=Dat)
+    return Dat.loc[filter, :]
+
+
+Data = import_data().set_index("Date")
+Data["Dates"] = np.nan
+for i in  Data.index:
+    Data.loc[i, "Dates"] = datetime.date(year=int(Data.loc[i, "year"]), month=int(Data.loc[i, "month"]), day=1)
+
+# Different categories, i.e. the 25 portfolios
+Categories = []
+Categories_excess = []
+for column in Data.columns:
+    if column == "Date" or column == "year" or column == "month" or column == "RF" or column == "Mkt-RF" or column == "Dates":
+        continue
+    Categories.append(column)
+    Categories_excess.append(column + '_excess')
+
+Rfs = import_Rf().set_index("Date")
+Data.loc[:, 'RF'] = Rfs.loc[:, "RF"]
+market_str = "Mkt-RF"
+Data.loc[:, market_str + '_excess'] = Rfs.loc[:, market_str]
+
+Data = Data.set_index("Dates")
+
+# excess return of the market + market expected excess return + market volatility
+Data.loc[:, market_str] = Data.loc[:, market_str + '_excess'] + Data.loc[:, "RF"]
+market_mu = np.mean(Data.loc[:, "Mkt-RF" + '_excess'].to_numpy())
+market_var = np.var(Data.loc[:, "Mkt-RF" + '_excess'].to_numpy(), ddof=1) # ddof = 1 makes the numerator of the estimator be N-1 instead of N
+
+# calculating excess return for each category per month
+for column in Categories:
+    Data.loc[:, column + '_excess'] = Data.loc[:, column] - Data.loc[:, "RF"]
+
+# calculating expected returns and covariance matrix
+Results1 = pd.DataFrame(columns = ['E_Ri', 'Var_Ri'], index = Categories) # im storing the expected excess returns and variances of each portfolio here just to be able to print and visualize. For calculations I will use the numpy arrays below
+Cov_Matrix = []
+mu = []
+for category in Categories:
+    Results1.loc[category, "E_Ri"] = np.mean(Data.loc[:, category + '_excess'].to_numpy())
+    Results1.loc[category, "Var_Ri"] = np.var(Data.loc[:, category + '_excess'].to_numpy(), ddof=1) # ddof = 1 makes the numerator of the estimator be N-1 instead of N
+    mu.append(np.mean(Data.loc[:, category + '_excess'].to_numpy()))
+    Cov_Matrix.append(Data.loc[:, category + '_excess'].to_numpy())
+
+T = len(Data.loc[:, "Mkt-RF" + '_excess'].to_numpy())
+ones_vec_T = np.ones((T, 1))
+n = len(Categories)
+ones_vec_n = np.ones((len(Categories),1)) # vertical ones vector
+
+Cov_with_market = Cov_Matrix.copy()
+Cov_with_market.append(Data.loc[:, market_str + '_excess'].to_numpy())
+Corr_wM_Matrix = np.corrcoef(Cov_with_market)
+Cov_wM_Matrix = np.cov(np.array(Cov_with_market))
+Cov_wM_Matrix_Inv = np.linalg.inv(Cov_wM_Matrix)
+
+mu = np.vstack(mu) # making array vertical
+Corr_Matrix = np.corrcoef(Cov_Matrix)
+Cov_Matrix = np.cov(np.array(Cov_Matrix))
+Cov_Matrix_Inv = np.linalg.inv(Cov_Matrix) # expensive calculation but who cares
+
+rf = 1 + 0.15/100
+mu = mu + rf # 0.15 is risk free rate to obtain gross return
+
+A = float(np.dot(np.transpose(mu), np.dot(Cov_Matrix_Inv, mu))[0])
+B = float(np.dot(np.transpose(mu), np.dot(Cov_Matrix_Inv, ones_vec_n))[0])
+C = float(np.dot(np.transpose(ones_vec_n), np.dot(Cov_Matrix_Inv, ones_vec_n))[0])
+
+# GMV and mu PPortfolio (writing PPortfolio wrong so it is distinguishable from the initial 25 portfolios) -> PPortfolio = a portfolio of portfolios
+pi_GMV = (1/C) * np.dot(Cov_Matrix_Inv, ones_vec_n) # weights vector for GMV
+mu_GMV = (B/C)
+var_GMV = (1/C)
+
+pi_mu = 1/B  * np.dot(Cov_Matrix_Inv, mu) # weights vector for GMV
+mu_mu = float(np.dot(np.transpose(mu), pi_mu))
+
+# tangency portfolio
+pi_tang = np.dot(Cov_Matrix_Inv, mu - rf) / (B - C * rf)
+mu_tang = float(np.dot(np.transpose(mu), pi_tang))
+
+# efficient frontier
+targets_mu = np.arange(0.05, 3.01, 0.01) * mu_GMV
+# calculating the respective variances on the efficient frontier
+targets_var = []
+for mu_target in targets_mu:
+    weight_lambda = (B*C*mu_target - B*B)/(A*C - B*B)
+    pi_target = weight_lambda * pi_mu + (1-weight_lambda) * pi_GMV
+    mu_target_res = float(np.dot(np.transpose(mu), pi_target))
+    var_target =  float(np.dot(np.transpose(pi_target), np.dot(Cov_Matrix,pi_target)))
+    var_target_2 = (A-2*B*mu_target+C*mu_target*mu_target)/(A*C - B*B)
+    targets_var.append(var_target)
+
+# tangency line
+tangency_line_mu = []
+tangency_line_StD = []
+for mu_target in targets_mu:
+    tangency_line_mu.append(mu_target)
+    pi = (1/float(np.dot(np.transpose(mu -  rf), np.dot(Cov_Matrix_Inv, mu -  rf)))) * np.dot(Cov_Matrix_Inv, mu - rf) * (mu_target - rf)
+    tangency_line_StD.append(np.sqrt(float(np.dot(np.transpose(pi), np.dot(Cov_Matrix, pi)))))
+tangency_line_mu = np.array(tangency_line_mu)
+tangency_line_StD = np.array(tangency_line_StD)
+
+# Regression
+X = Data.loc[:, market_str + '_excess'].to_numpy().reshape(-1,1)
+Y = Data.loc[:, Categories_excess].to_numpy()
+X = np.hstack((ones_vec_T, X))
+
+Q =  np.linalg.inv(np.dot(np.transpose(X),X))
+B_hat = np.dot( Q , np.dot(np.transpose(X), Y) )
+print(B_hat)
+# B_hat.tofile('data2.csv', sep = ',')
+
+alphas = np.vstack(B_hat[0,:])
+
+Y_hat = np.dot(X , B_hat)
+E = Y - Y_hat
+
+Sigma_E = 1/(T-2) * np.dot(np.transpose(E), E)
+Sigma_E_tilda = ((T-2)/T) * Sigma_E
+
+X = Data.loc[:, market_str + '_excess'].to_numpy().reshape(-1,1)
+X = sm.add_constant(X)
+
+B_hat_2 = []
+for i in range(25):
+    YY = Y[:,i]
+    model = sm.OLS(YY,X)
+    results = model.fit()
+    # B_hat_2.append((float(results.params[1]), float(results.bse[1]) ))
+    if np.abs(float(results.params[0])) - 2 * float(results.bse[0]) > 0:
+        B_hat_2.append(1)
+    else:
+        B_hat_2.append(0)
+    # print(results.summary())
+    # print(B_hat_2)
+
+model = sm.OLS(Y,X)
+results = model.fit()
+# print(results.params)
+# print(np.array(B_hat_2))
+B_hat_2 = np.array(B_hat_2)
+# B_hat_2.tofile('data_fail_t_test.csv', sep = ',')
+
+t_tests = []
+for i in range(len(Categories)):
+    t_tests.append(B_hat[0,i] / np.sqrt(Q[0,0] * Sigma_E[i,i]))
+
+# print(t_tests)
+
+F_test = ((T - n -1)/(n * (T - 2)) * (1/Q[0,0])) * np.dot(np.transpose(alphas), np.dot(np.linalg.inv(Sigma_E), alphas))
+
+mu_star = np.vstack((mu, market_mu + rf)) - rf
+Shr_r = float(np.sqrt(np.dot(np.transpose(mu - rf), np.dot(Cov_Matrix_Inv, mu - rf))))
+Shr_r_star = float(np.sqrt(np.dot(np.transpose(mu_star), np.dot(Cov_wM_Matrix_Inv, mu_star))))
+Shr_m = market_mu/np.sqrt(market_var) 
+
+F_test_2 = ((T-n-1)/(n)) * (1/(1 + Shr_m*Shr_m)) * (Shr_r_star * Shr_r_star - Shr_m *Shr_m)
+
+
+print(mu_GMV)
+print(np.sqrt(var_GMV))
+print(mu_mu)
+print(np.sqrt((A-2*B*mu_mu+C*mu_mu*mu_mu)/(A*C - B*B)))
+
+print((mu_GMV - rf)/np.sqrt(var_GMV))
+
+print((mu_mu - rf)/np.sqrt((A-2*B*mu_mu+C*mu_mu*mu_mu)/(A*C - B*B)))
+
+# print(mu_tang/np.sqrt((A-2*B*mu_tang+C*mu_tang*mu_tang)/(A*C - B*B)))
+
+# print(np.max(targets_mu/np.sqrt(targets_var)))
+# print(F_test)
+
+# print(F_test_2)
+
+# print(Q[0,0])
+# print((1 +  Shr_m * Shr_m)/T)
+
+# print(stats.f.ppf(0.95, n, T - n - 1))
+
+plt.figure(figsize=(7,5))
+
+plt.plot(np.sqrt(var_GMV), mu_GMV, marker="o", color="blue", label='GMV portfolio', linestyle="None")
+plt.plot(np.sqrt((A-2*B*mu_mu+C*mu_mu*mu_mu)/(A*C - B*B)), mu_mu, marker="o", color="darkgreen", label='mu portfolio', linestyle="None")
+plt.plot(np.sqrt((A-2*B*mu_tang+C*mu_tang*mu_tang)/(A*C - B*B)), mu_tang, marker="X", color='red', linewidth=2, linestyle="None", markersize=7, label='Tangency portfolio')
+plt.plot(0, rf, marker="*", color='k', label='Riskless asset', linestyle="None")
+plt.plot(np.sqrt(targets_var), targets_mu, color="black", label='Frontier (risky assets)')
+
+for i in range(2):
+    if i == 0:
+        cond = np.array(tangency_line_mu) > rf
+        plt.plot(tangency_line_StD[cond], tangency_line_mu[cond], color ='red', label='Frontier (w/ riskless asset)')
+    else:
+        cond = np.array(tangency_line_mu) < rf
+        plt.plot(tangency_line_StD[cond], tangency_line_mu[cond], '--', color ='red')
+
+
+for category in Categories:
+    plt.plot(np.sqrt(Results1.loc[category, "Var_Ri"]), Results1.loc[category, "E_Ri"] + rf, marker=".", color='k', linestyle="None")
+plt.plot(np.nan, np.nan, marker=".", color='k', label='Individual Portfolios', linestyle="None")
+
+plt.plot(np.sqrt(market_var), market_mu + rf, marker=11, color = 'magenta', label='Market portfolio', linestyle="None")
+
+
+plt.ylabel('Expected Return ($\mu$)')
+plt.xlabel('Standard Deviation ($\sigma$)')
+plt.legend(loc='upper left')
+
+plt.xlim((-0.1, 12))
+plt.ylim((0, 6))
+
+
+plt.show()
+
+
+# for category in Categories:
+#     plt.plot(Data[category + "_excess"])
+
+# plt.show()
+
